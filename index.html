@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Windows P2P Stream</title>
+    <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/simple-peer/9.11.1/simplepeer.min.js"></script> -->
+    <script src="simplepeer.min.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; background: #222; color: white; }
+        .video-container { display: flex; gap: 10px; margin-top: 20px; }
+        .video-container-self { display: flex; gap: 10px; margin-top: 20px; }
+        .video-container video  { width: 1920px; height: 1080px; background: black; border-radius: 8px; }
+        .video-container-self video { width: 480px; height: 270px; background: black; border-radius: 8px; }
+        video { width: 1920px; height: 1080px; background: black; border-radius: 8px; }
+        #status { margin: 10px; color: #0f0; }
+    </style>
+</head>
+<body>
+    <h2>WebRTC 1対1 通信テスト</h2>
+    <div id="status">待機中...</div>
+    <!-- <div>
+        <button id="btnInit">発信側 (Initiator)</button>
+        <button id="btnJoin">受信側 (Joiner)</button>
+    </div> -->
+
+    <div>
+        <input type="text" id="roomInput" placeholder="ルーム名を入力" value="test-room">
+        <button id="btnJoin">ルームに参加して開始</button>
+    </div>
+
+    <div class="video-container-self">
+        <video id="localVideo" autoplay muted playsinline></video>
+    </div>
+    
+    <div class="video-container">
+        <video id="remoteVideo" autoplay playsinline></video>
+    </div>
+    
+
+    <script>
+        const socket = io();
+        let peer = null;
+        let localStream = null;
+        const roomInput = document.getElementById('roomInput');
+
+        // 共通：カメラの準備
+        async function prepareMedia() {
+            if (localStream) return localStream;
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 1920, height: 1080 },
+                    audio: true
+                });
+                document.getElementById('localVideo').srcObject = stream;
+                localStream = stream;
+                return stream;
+            } catch (err) {
+                alert("カメラを許可してください。");
+                throw err;
+            }
+        }
+
+        // 共通：Peer作成
+        function createPeer(isInitiator, stream) {
+            const p = new SimplePeer({
+                initiator: isInitiator,
+                stream: stream,
+                trickle: true
+            });
+
+            p.on('signal', signal => {
+                // ルーム名と一緒にシグナルを送る
+                socket.emit('signal', {
+                    room: roomInput.value,
+                    signal: signal
+                });
+            });
+
+            p.on('stream', remoteStream => {
+                document.getElementById('remoteVideo').srcObject = remoteStream;
+                document.getElementById('status').innerText = '接続成功！';
+            });
+
+            return p;
+        }
+
+        // 1. ルームに参加する
+        document.getElementById('btnJoin').onclick = async () => {
+            const roomName = roomInput.value;
+            if (!roomName) return alert("ルーム名を入力してください");
+
+            await prepareMedia();
+            socket.emit('join', roomName);
+            document.getElementById('status').innerText = `ルーム [${roomName}] で待機中...`;
+        };
+
+        // 2. サーバーから「2人揃った（お前が発信しろ）」と言われたら (1人目のみ)
+        socket.on('ready', async () => {
+            document.getElementById('status').innerText = '相手が参加しました。接続を開始します...';
+            peer = createPeer(true, localStream);
+        });
+
+        // 3. 相手からシグナルが届いたら
+        socket.on('signal', async (signalData) => {
+            // まだPeerがなければ、自分が「受信側」として作成 (2人目のみ)
+            if (!peer) {
+                await prepareMedia();
+                peer = createPeer(false, localStream);
+            }
+            peer.signal(signalData);
+        });
+
+        // const socket = io();
+        // let peer = null;
+
+        // async function init(isInitiator) {
+        //     document.getElementById('status').innerText = 'カメラ起動中...';
+        //     try {
+        //         // FullHD設定
+        //         const stream = await navigator.mediaDevices.getUserMedia({
+        //             video: { width: 1920, height: 1080 },
+        //             audio: true
+        //         });
+        //         document.getElementById('localVideo').srcObject = stream;
+
+        //         peer = new SimplePeer({
+        //             initiator: isInitiator,
+        //             stream: stream,
+        //             trickle: false
+        //         });
+
+        //         peer.on('signal', data => {
+        //             socket.emit('signal', data);
+        //             document.getElementById('status').innerText = 'シグナル送信完了。接続待機中...';
+        //         });
+
+        //         peer.on('stream', remoteStream => {
+        //             document.getElementById('remoteVideo').srcObject = remoteStream;
+        //             document.getElementById('status').innerText = 'P2P接続成功！';
+        //         });
+
+        //         socket.on('signal', data => {
+        //             peer.signal(data);
+        //         });
+
+        //     } catch (err) {
+        //         console.error(err);
+        //         alert('カメラの起動に失敗しました。HTTPS環境か確認してください。');
+        //     }
+        // }
+
+        // document.getElementById('btnInit').onclick = () => init(true);
+        // document.getElementById('btnJoin').onclick = () => init(false);
+    </script>
+</body>
+</html>
