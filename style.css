@@ -1,0 +1,202 @@
+body {
+    font-family: sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: #222;
+    color: white;
+    margin: 0;
+    padding: 0;
+    /* Removed padding to allow full width */
+    height: 100vh;
+    box-sizing: border-box;
+}
+
+#videoArea {
+    position: relative;
+    width: 100%;
+    /* max-width removed to allow full width */
+    flex-grow: 1;
+    background: #000;
+    border-radius: 0;
+    /* Removed border radius for full immersive feel, or keep if preferred. User said maximize. */
+    overflow: hidden;
+    margin-top: 10px;
+    margin-bottom: 0;
+}
+
+.video-wrapper {
+    position: relative;
+    overflow: hidden;
+    background: #111;
+}
+
+.video-wrapper video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    /* or cover based on preference */
+}
+
+.video-wrapper .label {
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-size: 14px;
+    pointer-events: none;
+}
+
+/* === Layout: PiP (Default) === */
+.layout-pip .video-wrapper.remote {
+    width: 100%;
+    height: 100%;
+}
+
+.layout-pip .video-wrapper.local {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    width: 240px;
+    height: 135px;
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    border-radius: 8px;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.5);
+    z-index: 10;
+}
+
+/* === Layout: Side-by-Side === */
+.layout-side {
+    display: flex;
+    flex-direction: row;
+}
+
+.layout-side .video-wrapper {
+    flex: 1;
+    height: 100%;
+    border-right: 1px solid #333;
+}
+
+.layout-side .video-wrapper:last-child {
+    border-right: none;
+}
+
+/* === Layout: Stacked === */
+.layout-stack {
+    display: flex;
+    flex-direction: column;
+}
+
+.layout-stack .video-wrapper {
+    flex: 1;
+    width: 100%;
+    border-bottom: 1px solid #333;
+}
+
+.layout-stack .video-wrapper:last-child {
+    border-bottom: none;
+}
+
+
+/* Controls */
+h2 {
+    margin: 10px 0 5px 0;
+}
+
+#status {
+    margin: 5px 10px;
+    color: #0f0;
+}
+
+.controls {
+    background: #333;
+    padding: 10px 20px;
+    border-radius: 0;
+    /* Full width controls */
+    margin-bottom: 0;
+    display: flex;
+    gap: 20px;
+    align-items: flex-end;
+    /* Align inputs and buttons to bottom */
+    flex-wrap: wrap;
+    justify-content: center;
+    width: 100%;
+    /* max-width removed */
+    box-sizing: border-box;
+}
+
+.control-group {
+    display: block;
+    /* Switch to block to use standard flow */
+    width: fit-content;
+}
+
+.control-group label {
+    font-size: 12px;
+    color: #aaa;
+    margin: 0 0 5px 0;
+    /* Add bottom margin for spacing */
+    display: block;
+    /* Ensure it takes its own line */
+    width: auto;
+    /* Let it size naturally */
+}
+
+/* Ensure controls sit next to each other */
+.control-group select {
+    margin-right: 2px;
+    /* Spacing between select and button */
+    vertical-align: middle;
+}
+
+select,
+button {
+    padding: 8px;
+    border-radius: 4px;
+    border: 1px solid #555;
+    background: #444;
+    color: white;
+    cursor: pointer;
+}
+
+button:hover,
+select:hover {
+    background: #555;
+}
+
+button.active {
+    background: #c00;
+    border-color: #f00;
+}
+
+#audioMeter {
+    width: 100%;
+    height: 0%;
+    background: #0f0;
+    transition: height 0.05s;
+}
+
+.meter-container {
+    width: 20px;
+    height: 34px;
+    background: #222;
+    border: 1px solid #555;
+    display: inline-flex;
+    /* Changed to inline-flex to sit next to other controls */
+    align-items: flex-end;
+    position: relative;
+    vertical-align: middle;
+    /* Align with adjacent buttons/selects */
+    margin-right: 5px;
+    /* Spacing */
+}
+
+.buttons-row {
+    display: inline-flex;
+    /* Use inline-flex to sit next to select */
+    gap: 10px;
+    align-items: center;
+    vertical-align: middle;
+}

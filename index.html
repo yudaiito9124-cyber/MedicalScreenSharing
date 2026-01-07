@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Web meet</title>
+    <script src="js/simplepeer.min.js"></script>
+    <!-- https://cdnjs.cloudflare.com/ajax/libs/simple-peer/9.11.1/simplepeer.min.js -->
+    <script src="/socket.io/socket.io.js"></script> <!-- https://unpkg.com/konva@9.3.3/konva.min.js -->
+    <script src="js/konva.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .konva-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 20;
+            /* Above video and label */
+            pointer-events: auto;
+            /* Catch drawing events */
+            cursor: crosshair;
+        }
+
+        .video-wrapper .label {
+            z-index: 30;
+            /* Keep label on top of canvas */
+        }
+
+        .disconnected-msg {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 3rem;
+            font-weight: bold;
+            z-index: 5;
+            pointer-events: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="status">任意のルーム名とパスワードを入力して接続してください</div>
+    <div id="roomSelectionArea">
+        <input type="text" id="roomInput" placeholder="ルーム名を入力" value="test-room">
+        <input type="password" id="passwordInput" placeholder="パスワードを入力" value="">
+        <button id="btnJoin">ルームに参加して開始</button>
+    </div>
+
+    <div class="controls">
+        <div class="control-group">
+            <label>📷カメラ</label>
+            <select id="cameraSelect" style="max-width: 200px;"></select>
+            <div class="buttons-row">
+                <button id="btnToggleVideo">隠す</button>
+            </div>
+        </div>
+        <div class="control-group">
+            <label>🎤マイク</label>
+            <select id="micSelect" style="max-width: 200px;"></select>
+            <div class="meter-container">
+                <div id="audioMeter"></div>
+            </div>
+            <div class="buttons-row">
+                <button id="btnToggleAudio">ミュートする</button>
+            </div>
+        </div>
+        <div class="control-group">
+            <label>🔊スピーカー</label>
+            <select id="speakerSelect" style="max-width: 200px;"></select>
+        </div>
+        <div class="control-group">
+            <label>▣表示レイアウト</label>
+            <select id="layoutSelect" style="max-width: 200px;">
+                <option value="layout-pip">相手を最大化</option>
+                <option value="layout-side">左右</option>
+                <option value="layout-stack">上下</option>
+            </select>
+        </div>
+        <div class="control-group">
+            <label>🖊描画</label>
+            <div class="buttons-row">
+                <button id="btnClear" onclick="clearAllDrawings()">全消去</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="videoArea" class="layout-pip">
+        <div class="video-wrapper local" id="localWrapper">
+            <video id="localVideo" autoplay muted playsinline></video>
+            <div id="localKonva" class="konva-container"></div>
+            <span class="label">あなた</span>
+        </div>
+        <div class="video-wrapper remote" id="remoteWrapper">
+            <video id="remoteVideo" autoplay playsinline></video>
+            <div id="remoteKonva" class="konva-container"></div>
+            <div id="disconnectedMsg" class="disconnected-msg">未接続</div>
+            <span class="label">リモート</span>
+        </div>
+    </div>
+
+
+    <script src="js/drawing.js"></script>
+    <script>
+        const socket = io();
+        let peer = null;
+        let localStream = null;
+        let currentRoomName = '';
+        const roomInput = document.getElementById('roomInput');
+        const cameraSelect = document.getElementById('cameraSelect');
+        const micSelect = document.getElementById('micSelect');
+        const speakerSelect = document.getElementById('speakerSelect');
+        const audioMeter = document.getElementById('audioMeter');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const localVideo = document.getElementById('localVideo');
+        let audioContext, analyser, microphone;
+
+
+        // デバイス一覧取得
+        async function getDevices() {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const currentVideo = cameraSelect.value;
+                const currentAudio = micSelect.value;
+                const currentSpeaker = speakerSelect.value;
+
+                cameraSelect.innerHTML = '';
+                micSelect.innerHTML = '';
+                speakerSelect.innerHTML = '';
+
+                devices.forEach(device => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    option.text = device.label || `${device.kind} - ${device.deviceId.slice(0, 5)}...`;
+                    if (device.kind === 'videoinput') cameraSelect.appendChild(option);
+                    else if (device.kind === 'audioinput') micSelect.appendChild(option);
+                    else if (device.kind === 'audiooutput') speakerSelect.appendChild(option);
+                });
+
+                if (currentVideo && [...cameraSelect.options].some(o => o.value === currentVideo)) cameraSelect.value = currentVideo;
+                if (currentAudio && [...micSelect.options].some(o => o.value === currentAudio)) micSelect.value = currentAudio;
+                if (currentSpeaker && [...speakerSelect.options].some(o => o.value === currentSpeaker)) speakerSelect.value = currentSpeaker;
+            } catch (e) { console.error("Error enumerating devices", e); }
+        }
+
+        // 音声レベルメーター
+        function setupAudioMeter(stream) {
+            if (audioContext) audioContext.close();
+            try {
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                audioContext = new AudioContext();
+                analyser = audioContext.createAnalyser();
+                microphone = audioContext.createMediaStreamSource(stream);
+                microphone.connect(analyser);
+                analyser.fftSize = 256;
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+
+                function draw() {
+                    if (!localStream || !localStream.active) return;
+                    requestAnimationFrame(draw);
+                    analyser.getByteFrequencyData(dataArray);
+                    let sum = 0;
+                    for (let i = 0; i < bufferLength; i++) sum += dataArray[i];
+                    let average = sum / bufferLength;
+                    let height = Math.min(100, average * 3);
+                    audioMeter.style.height = height + "%";
+                }
+                draw();
+            } catch (e) { console.error("Audio Context Error", e); }
+        }
+
+        // 共通：カメラの準備
+        async function prepareMedia() {
+            const videoId = cameraSelect.value;
+            const audioId = micSelect.value;
+
+            // 既存のストリームがあり、かつデバイスIDが変わっていない場合は再利用する
+            if (localStream && localStream.active) {
+                const currentVideoTrack = localStream.getVideoTracks()[0];
+                const currentAudioTrack = localStream.getAudioTracks()[0];
+
+                const currentVideoId = currentVideoTrack ? currentVideoTrack.getSettings().deviceId : null;
+                const currentAudioId = currentAudioTrack ? currentAudioTrack.getSettings().deviceId : null;
+
+                // 選択されたIDと現在のIDが一致（または指定なしで既にトラックがある）なら再利用
+                const videoMatch = !videoId || (currentVideoId === videoId);
+                const audioMatch = !audioId || (currentAudioId === audioId);
+
+                if (videoMatch && audioMatch) {
+                    console.log("Reusing existing stream");
+                    return localStream;
+                }
+            }
+
+            const constraints = {
+                video: videoId ? { deviceId: { exact: videoId }, width: 1920, height: 1080 } : { width: 1920, height: 1080 },
+                audio: audioId ? { deviceId: { exact: audioId } } : true
+            };
+
+            try {
+                let videoSender = null;
+                let audioSender = null;
+
+                if (peer && !peer.destroyed && peer._pc) {
+                    const senders = peer._pc.getSenders();
+                    videoSender = senders.find(s => s.track && s.track.kind === 'video');
+                    audioSender = senders.find(s => s.track && s.track.kind === 'audio');
+                }
+
+                let isVideoEnabled = true;
+                let isAudioEnabled = true;
+
+                if (localStream) {
+                    const vTrack = localStream.getVideoTracks()[0];
+                    const aTrack = localStream.getAudioTracks()[0];
+                    if (vTrack) isVideoEnabled = vTrack.enabled;
+                    if (aTrack) isAudioEnabled = aTrack.enabled;
+
+                    localStream.getTracks().forEach(track => track.stop());
+                }
+
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+                if (stream.getVideoTracks()[0]) stream.getVideoTracks()[0].enabled = isVideoEnabled;
+                if (stream.getAudioTracks()[0]) stream.getAudioTracks()[0].enabled = isAudioEnabled;
+
+                localStream = stream;
+                document.getElementById('localVideo').srcObject = stream;
+
+                // Important: Trigger redraw when video metadata loads (aspect ratio known)
+                document.getElementById('localVideo').onloadedmetadata = () => {
+                    redrawAllLayers();
+                };
+
+                setupAudioMeter(stream);
+
+                if (peer && !peer.destroyed) {
+                    const videoTrack = stream.getVideoTracks()[0];
+                    const audioTrack = stream.getAudioTracks()[0];
+
+                    if (videoSender && videoTrack) {
+                        videoSender.replaceTrack(videoTrack).catch(e => console.error("Video Replace Error", e));
+                    }
+                    if (audioSender && audioTrack) {
+                        audioSender.replaceTrack(audioTrack).catch(e => console.error("Audio Replace Error", e));
+                    }
+                }
+                return stream;
+            } catch (err) {
+                console.error(err);
+                alert(`Camera Error: ${err.name} - ${err.message}`);
+                throw err;
+            }
+        }
+
+        // イベントリスナー
+        cameraSelect.onchange = prepareMedia;
+        micSelect.onchange = prepareMedia;
+        speakerSelect.onchange = async () => {
+            const deviceId = speakerSelect.value;
+            if (remoteVideo.setSinkId) {
+                try {
+                    await remoteVideo.setSinkId(deviceId);
+                    console.log(`Audio output set to ${deviceId}`);
+                    alert(`スピーカーを変更しました: ${deviceId}`);
+                } catch (e) {
+                    console.error("Failed to set audio sink", e);
+                    alert("スピーカーの変更に失敗しました: " + e.message);
+                }
+            } else {
+                console.warn("setSinkId not supported on this browser");
+                alert("このブラウザはスピーカー出力の変更に対応していません。");
+            }
+        };
+
+        const layoutSelect = document.getElementById('layoutSelect');
+        const videoArea = document.getElementById('videoArea');
+        layoutSelect.onchange = () => {
+            videoArea.className = layoutSelect.value;
+            setTimeout(() => {
+                redrawAllLayers();
+            }, 100);
+        };
+
+        document.getElementById('btnToggleAudio').onclick = () => {
+            if (localStream) {
+                const track = localStream.getAudioTracks()[0];
+                if (track) {
+                    track.enabled = !track.enabled;
+                    document.getElementById('btnToggleAudio').classList.toggle('active', !track.enabled);
+                    document.getElementById('btnToggleAudio').innerText = track.enabled ? "ミュートする" : "【ミュート中】解除する";
+                }
+            }
+        };
+
+        document.getElementById('btnToggleVideo').onclick = () => {
+            if (localStream) {
+                const track = localStream.getVideoTracks()[0];
+                if (track) {
+                    track.enabled = !track.enabled;
+                    document.getElementById('btnToggleVideo').classList.toggle('active', !track.enabled);
+                    document.getElementById('btnToggleVideo').innerText = track.enabled ? "隠す" : "【非表示中】見せる";
+                }
+            }
+        };
+
+        // 初期化実行
+        window.addEventListener('load', () => {
+            initKonva();
+        });
+
+        navigator.mediaDevices.getUserMedia({ audio: true, video: true })
+            .then(async s => {
+                s.getTracks().forEach(t => t.stop());
+                await getDevices();
+                prepareMedia();
+            })
+            .catch(async e => {
+                console.warn("Permission denied or error", e);
+                await getDevices();
+            });
+
+        function createPeer(isInitiator, stream, roomName) {
+            const p = new SimplePeer({
+                initiator: isInitiator,
+                stream: stream,
+                trickle: true
+            });
+
+            p.on('signal', signal => {
+                socket.emit('signal', {
+                    room: roomInput.value,
+                    signal: signal
+                });
+            });
+
+            p.on('stream', remoteStream => {
+                const rv = document.getElementById('remoteVideo');
+                rv.srcObject = remoteStream;
+                document.getElementById('status').innerText = `通話中 [${roomName}]`;
+                document.getElementById('roomSelectionArea').style.display = 'none';
+                document.getElementById('disconnectedMsg').style.display = 'none';
+
+                rv.onloadedmetadata = () => {
+                    redrawAllLayers();
+                };
+
+                const speakerId = speakerSelect.value;
+                if (speakerId && rv.setSinkId) {
+                    rv.setSinkId(speakerId).catch(console.error);
+                }
+            });
+
+            p.on('data', data => {
+                try {
+                    const json = JSON.parse(data);
+                    if (json.type === 'draw') {
+                        handleDrawData(json);
+                    }
+                } catch (e) {
+                    console.error("Data channel error", e);
+                }
+            });
+
+            p.on('close', () => {
+                console.log("Peer closed");
+                alert("相手との接続が切れました。再読み込みします。");
+                location.reload();
+            });
+
+            p.on('error', (err) => {
+                console.error("Peer error:", err);
+                alert("通信エラーが発生しました。再読み込みします。");
+                location.reload();
+            });
+
+            return p;
+        }
+
+        document.getElementById('btnJoin').onclick = async () => {
+            const roomName = roomInput.value;
+            const password = document.getElementById('passwordInput').value;
+
+            if (!roomName) return alert("ルーム名を入力してください");
+            if (!password) return alert("パスワードを入力してください");
+
+            currentRoomName = roomName;
+
+            await prepareMedia();
+            socket.emit('join', { roomName, password });
+            const statusEl = document.getElementById('status');
+            statusEl.innerText = `ルーム [${roomName}] に接続し，相手からの接続を待機しています...（パスワード：${password}）`;
+            statusEl.style.color = '';
+            statusEl.style.fontWeight = '';
+        };
+
+        socket.on('auth-error', (message) => {
+            console.error('Auth Error:', message);
+            const statusEl = document.getElementById('status');
+            statusEl.innerText = `認証エラー: ${message}`;
+            statusEl.style.color = 'red';
+            statusEl.style.fontWeight = 'bold';
+            setTimeout(() => alert(`認証エラー: ${message}`), 10);
+        });
+
+        socket.on('ready', async () => {
+            document.getElementById('status').innerText = '相手が参加しました。接続を開始します...';
+            peer = createPeer(true, localStream, currentRoomName);
+        });
+
+        socket.on('signal', async (signalData) => {
+            if (!peer) {
+                await prepareMedia();
+                peer = createPeer(false, localStream, currentRoomName);
+            }
+            peer.signal(signalData);
+        });
+
+    </script>
+</body>
+
+</html>
