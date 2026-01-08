@@ -38,6 +38,11 @@ app.get('/', (req, res) => {
 // パスワード管理用オブジェクト { roomName: hashedPassword }
 const roomPasswords = {};
 
+// レートリミット管理用 { ipAddress: { count: number, resetTime: number } }
+const rateLimits = {};
+const RATE_LIMIT_WINDOW = 60 * 1000; // 1分
+const MAX_ATTEMPTS = 5; // 1分間に5回まで
+
 const bcrypt = require('bcryptjs');
 
 // --- ログ設定 ---
@@ -52,6 +57,15 @@ function logEvent(message) {
     }
 }
 
+// セキュリティヘッダー設定ミドルウェア
+app.use((req, res, next) => {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    next();
+});
+
 io.on('connection', (socket) => {
     const clientIp = socket.handshake.address;
     const connectTime = new Date().toLocaleString();
@@ -60,6 +74,22 @@ io.on('connection', (socket) => {
 
     // ルームへの参加
     socket.on('join', async ({ roomName, password }) => {
+        // レートリミットチェック
+        // 注: 実運用ではRedisなどを使用することを推奨。ここでは簡易メモリ実装。
+        const now = Date.now();
+        const limit = rateLimits[clientIp] || { count: 0, resetTime: now + RATE_LIMIT_WINDOW };
+
+        if (now > limit.resetTime) {
+            limit.count = 0;
+            limit.resetTime = now + RATE_LIMIT_WINDOW;
+        }
+
+        if (limit.count >= MAX_ATTEMPTS) {
+            socket.emit('auth-error', '試行回数が多すぎます。しばらく待ってから再試行してください。');
+            logEvent(`${connectTime},RATE_LIMIT_BLOCK,${socket.id},${clientIp},${roomName}`);
+            return;
+        }
+
         // パスワードがない場合はエラー
         if (!roomName || !password) {
             socket.emit('auth-error', 'ルーム名とパスワードを入力してください');
@@ -79,6 +109,9 @@ io.on('connection', (socket) => {
             socket.join(roomName);
             const time = new Date().toLocaleString();
             logEvent(`${time},JOIN,${socket.id},${clientIp},${roomName}`);
+
+            // 成功通知 (新規ルーム)
+            socket.emit('joined', { roomName, isNewRoom: true });
         } else {
             // 既存ルーム -> パスワード確認
             const storedHash = roomPasswords[roomName];
@@ -92,9 +125,15 @@ io.on('connection', (socket) => {
             const match = await bcrypt.compare(password, storedHash);
 
             if (match) {
+                // 成功時はレートリミットリセット（オプション）
+                // limit.count = 0; 
+
                 socket.join(roomName);
                 const time = new Date().toLocaleString();
                 logEvent(`${time},JOIN,${socket.id},${clientIp},${roomName}`);
+
+                // 成功通知
+                socket.emit('joined', { roomName, isNewRoom: false });
 
                 if (numClients === 1) {
                     // 2人目が参加した瞬間に、1人目（先にいた人）にだけ「準備完了」を送る
@@ -103,17 +142,31 @@ io.on('connection', (socket) => {
                     logEvent(`${time},CALL_START,-,-,${roomName}`);
                 }
             } else {
+                // 失敗カウント加算
+                limit.count++;
+                rateLimits[clientIp] = limit;
+
                 socket.emit('auth-error', 'パスワードが間違っています');
                 const time = new Date().toLocaleString();
                 logEvent(`${time},PASSWORD_FAIL,${socket.id},${clientIp},${roomName}`);
                 return;
             }
         }
+        // レートリミット情報を更新
+        rateLimits[clientIp] = limit;
     });
 
     // シグナリングデータの転送
     socket.on('signal', (data) => {
         // data = { room: '部屋名', signal: 'SDP/ICEデータ' }
+
+        // セキュリティ: 送信元が本当にそのルームに参加しているかチェック
+        const rooms = socket.rooms;
+        if (!rooms.has(data.room)) {
+            console.warn(`不正なシグナリング検知: Socket ${socket.id} は Room ${data.room} に参加していません。`);
+            return;
+        }
+
         // 指定されたルームの「自分以外」に転送
         socket.to(data.room).emit('signal', data.signal);
     });

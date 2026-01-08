@@ -393,10 +393,16 @@
             await prepareMedia();
             socket.emit('join', { roomName, password });
             const statusEl = document.getElementById('status');
-            statusEl.innerText = `ルーム [${roomName}] に接続し，相手からの接続を待機しています...（パスワード：${password}）`;
-            statusEl.style.color = '';
-            statusEl.style.fontWeight = '';
+            statusEl.innerText = `接続処理中...`;
         };
+
+        socket.on('joined', ({ roomName, isNewRoom }) => {
+            const statusEl = document.getElementById('status');
+            const roomType = isNewRoom ? "新規ルーム作成" : "既存ルームに参加";
+            statusEl.innerText = `【${roomType}】ルーム [${roomName}] に参加しました。相手を待機中...`;
+            statusEl.style.color = 'lightgreen';
+            statusEl.style.fontWeight = 'bold';
+        });
 
         socket.on('auth-error', (message) => {
             console.error('Auth Error:', message);
